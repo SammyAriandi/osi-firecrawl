@@ -1,0 +1,168 @@
+version: '3.8'
+
+# ============================================
+# PT Optima Smartindo - Web Scraping System
+# Single consolidated Docker Compose
+# ============================================
+
+services:
+
+  # ===== 1. PostgreSQL (Main ERP Database) =====
+  optima-postgres:
+    image: postgres:15-alpine
+    container_name: optima-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-optima_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-OptimaSmartin123}
+      POSTGRES_DB: ${POSTGRES_DB:-optima_erp}
+      TZ: Asia/Jakarta
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init_db.sql:/docker-entrypoint-initdb.d/01-init.sql
+      - ./schema.sql:/docker-entrypoint-initdb.d/02-schema.sql
+    networks:
+      - optima-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-optima_user} -d ${POSTGRES_DB:-optima_erp}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ===== 2. pgAdmin (Database UI) =====
+  optima-pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: optima-pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@optima.local}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-AdminOptima123}
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+      TZ: Asia/Jakarta
+    ports:
+      - "5050:80"
+    networks:
+      - optima-network
+    depends_on:
+      optima-postgres:
+        condition: service_healthy
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ===== 3. Redis (Shared queue for n8n + general cache) =====
+  optima-redis:
+    image: redis:7-alpine
+    container_name: optima-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - optima-network
+    restart: always
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ===== 4. n8n (Workflow Orchestrator) =====
+  optima-n8n:
+    image: n8nio/n8n:latest
+    container_name: optima-n8n
+    environment:
+      # Basic
+      N8N_HOST: 0.0.0.0
+      N8N_PORT: 5678
+      N8N_PROTOCOL: http
+      TZ: Asia/Jakarta
+
+      # Database - uses the same PostgreSQL
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: optima-postgres
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: ${POSTGRES_DB:-optima_erp}
+      DB_POSTGRESDB_USER: ${POSTGRES_USER:-optima_user}
+      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD:-OptimaSmartin123}
+      DB_POSTGRESDB_SSL: 'false'
+
+      # Webhook
+      WEBHOOK_URL: http://localhost:5678/
+      N8N_SECURE_COOKIE: 'false'
+
+      # Security
+      N8N_BASIC_AUTH_ACTIVE: 'true'
+      N8N_BASIC_AUTH_USER: ${N8N_BASIC_AUTH_USER:-admin}
+      N8N_BASIC_AUTH_PASSWORD: ${N8N_BASIC_AUTH_PASSWORD:-Optima2024}
+
+      # Locale
+      LC_ALL: id_ID.UTF-8
+      LANG: id_ID.UTF-8
+
+      # Performance
+      GENERIC_FUNCTION_TIMEOUT: 600
+      FUNCTION_TIMEOUT: 600
+      N8N_LOG_LEVEL: info
+      N8N_LOG_OUTPUT: combined
+      NODE_OPTIONS: '--max-old-space-size=2048'
+      EXECUTIONS_TIMEOUT: 3600
+      EXECUTIONS_TIMEOUT_MAX: 7200
+
+      # Queue (Redis)
+      QUEUE_BULL_REDIS_HOST: optima-redis
+      QUEUE_BULL_REDIS_PORT: 6379
+      QUEUE_BULL_REDIS_DB: 0
+
+    ports:
+      - "5678:5678"
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./n8n_workflows:/workflows
+    depends_on:
+      optima-postgres:
+        condition: service_healthy
+      optima-redis:
+        condition: service_healthy
+    networks:
+      - optima-network
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:5678/healthz || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  n8n_data:
+    driver: local
+
+networks:
+  optima-network:
+    driver: bridge
